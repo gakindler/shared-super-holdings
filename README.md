@@ -1,6 +1,6 @@
 # Holdings comparisons of ethical super funds in Australia
 
-![Upset plot](https://github.com/gakindler/shared-super-holdings/blob/main/output/fig_upset.pdf)
+![Upset plot](output/plot_upset.png)
 
 ## Incoming/TODO
 
