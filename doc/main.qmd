@@ -315,6 +315,7 @@ upset_matrix <- bind_rows(clean_van, clean_aes) |>
 fig_upset <- upset(upset_matrix, empty.intersections = "on", order.by = "freq")
 
 png(file = here("output/fig_upset.png"))
+pdf(file = here("output/fig_upset.pdf"))
 fig_upset
 dev.off()
 ```
