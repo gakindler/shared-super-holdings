@@ -1,0 +1,346 @@
+---
+title: "Comparison of Australian super fund holdings"
+author: "Gareth S. Kindler"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+bibliography: /home/gareth/science/admin/bibliography/zotero_lib_exports/lenovo_pop_os_my_library.bib
+format:
+  html:
+    highlight-style: github
+    embed-resources: true
+    toc: true
+link-citations: yes
+csl: /home/gareth/science/admin/bibliography/csls/apa.csl
+biblio-style: apsr
+---
+
+# Research plan
+
+Dataset attributes:
+
+* Number of variables: 2 per fund dataset
+* Types of data: 1 categorical, 1 continuous (percentages)
+* Design: Unpaired
+
+I'm attempting to do an analysis of comparing the holdings of different funds. My questions are:
+
+1. How many companies do both funds share investments in?
+   1. Intersecting sets, most likely an upset plot would do the job
+2. Of the companies that are shared between funds, how do the proportion of investment in the companies differ between the two funds?
+   1. Chi-squared test for independence
+
+Dummy data:
+
+| Fund | Company | Proportion |
+|------|---------|------------|
+| A    | A       | 0.7        |
+| A    | B       | 0.2        |
+| A    | C       | 0.1        |
+| B    | A       | 0.5        |
+| B    | D       | 0.3        |
+| B    | E       | 0.2        |
+
+# Import
+
+```{r lib-config}
+pacman::p_load(
+  tidyverse,
+  here,
+  readxl,
+  stringr,
+  fs,
+  fedmatch,
+  UpSetR
+)
+
+here::i_am("doc/main.qmd")
+```
+
+Data was downloaded on the 2023-06-10. We're going to look at three different investment options:
+
+1. [Australian Ethical Super Balanced (Accumulation)](https://www.australianethical.com.au/portfolio-holdings/)
+2. [Australian Ethical Super High Growth (Accumulation)](https://www.australianethical.com.au/portfolio-holdings/)
+3. [Vanguard Ethically Conscious Growth Super Fund](https://www.vanguard.com.au/super/choose-your-super/diversified?inv=ethically-conscious-growth)*
+   1. [Vanguard Ethically Conscious International Shares Index Fund](https://www.vanguard.com.au/personal/invest-with-us/fund?portId=8159&tab=holdings)
+   2. [Vanguard Ethically Conscious International Shares Index Fund (AUD Hedged)](https://www.vanguard.com.au/personal/invest-with-us/fund?portId=8160&tab=holdings)
+   3. [Vanguard Ethically Conscious Australian Shares Fund (Wholesale)](https://www.vanguard.com.au/personal/invest-with-us/fund?portId=8163&tab=holdings)
+   4. [Vanguard Ethically Conscious Global Aggregate Bond Index Fund (Hedged) - AUD Hedged](https://www.vanguard.com.au/personal/invest-with-us/fund?portId=8136&tab=holdings)
+
+*Vanguard Ethically Conscious Growth Super Fund is a combination of the four vanguard super funds listed above. I'll compile it into a singular Fund dataset later, in Transform. Some of the names don't really line up which is confusing and annoying. Fingers crossed these are the right datasets.
+
+* Probably could also look at [Future Super](https://www.futuresuper.com.au/everything-we-invest-in/). Cbf atm. They don't have an easy DL option. When I did find the DL, the xlsx file was too messy for my interests.
+* Another for completion would be UniSuper and their [Sustainable High Growth](https://www.unisuper.com.au/investments/our-investment-options/sustainable-high-growth) option. They set it up across different asset classes (similar to Vanguard), I can't be bothered to do the data wrangling required for this comparison.
+
+```{r file-name-change}
+#| include: false
+
+files_from <- c(
+  "Australian Ethical Super Balanced (Accumulation) Option Portfolio Holdings.csv",
+  "Australian Ethical Super High Growth (Accumulation) Option Portfolio Holdings.csv",
+  "Vanguard Ethically Conscious Australian Shares Fund (Wholesale).xlsx",
+  "Vanguard Ethically Conscious Global Aggregate Bond Index Fund (Hedged) - AUD Hedged.xlsx",
+  "Vanguard Ethically Conscious International Shares Index Fund (AUD Hedged).xlsx",
+  "Vanguard Ethically Conscious International Shares Index Fund.xlsx"
+)
+files_from <- here("data/raw", files_from)
+
+files_to <- c(
+  "aes_balanced.csv",
+  "aes_high_growth.csv",
+  "van_ethic_aus_shares.xlsx",
+  "van_ethic_global_aggreg_bond_hedged.xlsx",
+  "van_ethic_int_shares_aud_hedged.xlsx",
+  "van_ethic_int_shares.xlsx"
+)
+files_to <- here("data/raw", files_to)
+
+files_rename <- function(files_from, files_to) {
+  if(file.exists(files_from)) {
+      file.rename(files_from, files_to)
+      print("File rename successful.")
+    } else {
+      print("File rename failed, which is most probably what we want.")
+    }
+}
+
+purrr::map2(files_from, files_to, files_rename)
+```
+
+```{r load-files}
+raw_list_csv <- list.files(here("data/raw"), full.names = TRUE, pattern = ".csv")
+raw_list_xlsx <- list.files(here("data/raw"), full.names = TRUE, pattern = ".xlsx")
+
+raw_aes <- lapply(raw_list_csv, read_csv)
+names(raw_aes) <- c("aes_balanced", "aes_high_growth")
+
+raw_van <- lapply(raw_list_xlsx, read_excel)
+names(raw_van) <- c("van_ethic_aus_shares", "van_ethic_global_aggreg_bond_hedged", "van_ethic_int_shares_aud_hedged", "van_ethic_int_shares")
+```
+
+# Clean and transform
+
+## Sussing the limitations
+
+```{r}
+glimpse(raw_aes)
+
+lapply(raw_aes, names)
+
+glimpse(raw_van)
+
+lapply(raw_van, names)
+```
+
+AES offers the `Value (AUD)` and `Weighting (%)`, yet Vanguard only offers `Weighting (%)` or `% of net assets`. This limits our downstream analysis.
+
+```{r clean-names}
+col_name_clean <- function(df) {
+  for (i in seq_along(df)) {
+    names(df[[i]]) <- str_replace_all(names(df[[i]]), "[ /]", "_")
+    names(df[[i]]) <- str_replace_all(names(df[[i]]), "[^a-zA-Z%_]", "")
+    names(df[[i]]) <- str_replace_all(names(df[[i]]), "%", "percentage")
+    names(df[[i]]) <- str_to_lower(names(df[[i]]))
+  }; df
+}
+
+clean_aes <- col_name_clean(raw_aes)
+clean_van_sep <- col_name_clean(raw_van)
+```
+
+## Solving the corporate naming problem
+
+Package [`fedmatch`](https://cran.r-project.org/web/packages/fedmatch/vignettes/Intro-to-fedmatch.html) is the MVP here. It has various useful functions.
+
+```{r}
+lapply(clean_aes, names)
+
+lapply(clean_van_sep, names)
+```
+
+```{r clean-content}
+clean_content_aes <- function(df) {
+  for (i in seq_along(df)) {
+    df[[i]] <- df[[i]] %>%
+      select(name_of_investment_institution_issuer_fund_manager, weighting_percentage) |>
+      rename(
+        name_investment = name_of_investment_institution_issuer_fund_manager,
+        weight = weighting_percentage
+      ) |>
+      mutate(
+        name_investment = str_to_lower(name_investment),
+        weight = weight * 0.01
+      ) |>
+      filter(!name_investment %in% c("grand total", "total")) |>
+      mutate(
+        name_investment = clean_strings(name_investment, common_words = corporate_words)
+      )
+  }; df
+}
+
+clean_content_van <- function(df) {
+  for (i in seq_along(df)) {
+    df[[i]] <- df[[i]] %>%
+      select(holding_name, percentage_of_net_assets) |>
+      rename(
+        name_investment = holding_name,
+        weight_minor = percentage_of_net_assets
+      ) |>
+      mutate(
+        name_investment = str_to_lower(name_investment),
+        weight_minor = as.numeric(str_remove_all(weight_minor, "%")) * 0.01
+      ) |>
+      mutate(
+        name_investment = clean_strings(name_investment, common_words = corporate_words)
+      )
+  }; df
+}
+
+clean_aes <- clean_content_aes(clean_aes)
+clean_van_sep <- clean_content_van(clean_van_sep)
+```
+
+## Check the weighting sums
+
+```{r}
+check_sums <- function(df, measure) {
+  for (i in seq_along(df)) {
+    df[[i]] <- df[[i]] %>%
+      summarise(
+        {{ measure }} := sum( {{ measure }} )
+      ) |>
+      arrange(desc( {{ measure }} ))
+  }; df
+}
+
+check_sums(clean_aes, weight)
+check_sums(clean_van_sep, weight_minor)
+```
+
+# Transform
+
+## Vanguard consolidation
+
+The Vanguard Ethically Conscious Super option is a distribution across four funds. We now need to make the adjustment across those four.
+
+| Assets | Type | Allocation | Range |
+| --- | --- | --- | --- |
+| Ethically Conscious Australian Shares | Growth | 28% | 25 - 31% |
+| Ethically Conscious Global Fixed Interest (Hedged) | Defensive | 30% | 27 - 33% |
+| Ethically Conscious International Shares (Hedged) | Growth | 13% | 10 - 16% |
+| Ethically Conscious International Shares | Growth | 29% | 26 - 32% |
+
+NB: As at 05 Oct 2022
+
+```{r van-alloc}
+add_allocation <- function(list) {
+  for (i in seq_along(list)) {
+    if (names(list)[[i]] == "van_ethic_aus_shares") {
+      list[[i]] <- list[[i]] %>%
+        mutate(allocation = 0.28)
+      list
+    } else if (names(list)[[i]] == "van_ethic_global_aggreg_bond_hedged") {
+      list[[i]] <- list[[i]] |>
+        mutate(allocation = 0.30)
+      list
+    } else if (names(list)[[i]] == "van_ethic_int_shares_aud_hedged") {
+      list[[i]] <- list[[i]] |>
+        mutate(allocation = 0.13)
+      list
+    } else if (names(list)[[i]] == "van_ethic_int_shares") {
+      list[[i]] <- list[[i]] |>
+        mutate(allocation = 0.29)
+      list
+    } else {
+      stop("The list does not contain the expected names")
+    }
+  }; list
+}
+
+clean_van_sep <- add_allocation(clean_van_sep)
+```
+
+```{r van-multiply-weights}
+multiply_weights <- function(list) {
+  for (i in seq_along(list)) {
+    list[[i]] <- list[[i]] %>%
+      mutate(weight = weight_minor * allocation)
+  }; list
+}
+
+clean_van_sep <- multiply_weights(clean_van_sep)
+
+check_sums(clean_van_sep, weight)
+```
+
+```{r}
+clean_van <- bind_rows(clean_van_sep, .id = "minor_fund") |>
+  mutate(
+    major_fund = "van_ethic_super",
+    .before = 1
+  )
+clean_aes <- bind_rows(clean_aes, .id = "major_fund")
+```
+
+## Summing duplicates
+
+```{r}
+clean_van <- clean_van |>
+  group_by(major_fund, name_investment) |>
+  summarise(weight = sum(weight)) |>
+  ungroup()
+
+clean_aes <- clean_aes |>
+  filter(major_fund == "aes_high_growth") |>
+  group_by(major_fund, name_investment) |>
+  summarise(weight = sum(weight)) |>
+  ungroup()
+```
+
+# Visualisation
+
+## Upset
+
+```{r}
+upset_matrix <- bind_rows(clean_van, clean_aes) |>
+  mutate(value = 1) |>
+  select(-weight) |>
+  pivot_wider(
+    names_from = major_fund,
+    values_from = value,
+    values_fill = 0
+  ) |>
+  as.data.frame()
+```
+
+```{r}
+fig_upset <- upset(upset_matrix, empty.intersections = "on", order.by = "freq")
+
+pdf(file = here("output/fig_upset.pdf"))
+fig_upset
+dev.off()
+```
+
+## Significance test for shared companies investment weights
+
+```{r}
+clean_funds <- bind_rows(clean_van, clean_aes)
+```
+
+```{r}
+fund_aes_high_growth <- clean_funds %>%
+  filter(major_fund == "aes_high_growth") %>%
+  select(name_investment, weight)
+
+fund_van <- clean_funds %>%
+  filter(major_fund == "van_ethic_super") %>%
+  select(name_investment, weight)
+
+funds_shared_companies <- fund_aes_high_growth %>%
+  inner_join(fund_van, by = "name_investment", suffix = c("_aes", "_van"))
+```
+
+Simulate p-value because many of the values are too small. We can observe the massive change in p-value when we use the simulation.
+
+```{r}
+chisq.test(funds_shared_companies$weight_aes, funds_shared_companies$weight_van, simulate.p.value = TRUE)
+```
+
